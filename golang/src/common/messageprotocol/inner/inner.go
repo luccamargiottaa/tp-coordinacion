@@ -8,12 +8,13 @@ import (
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
 )
 
-func serializeJson(message []interface{}) ([]byte, error) {
+func serializeJson(message []any) ([]byte, error) {
 	return json.Marshal(message)
 }
 
-func deserializeJson(message []byte) ([]interface{}, error) {
-	var data []interface{}
+func deserializeJson(message []byte) ([]any, error) {
+	var data []any
+
 	if err := json.Unmarshal(message, &data); err != nil {
 		return nil, err
 	}
@@ -21,16 +22,17 @@ func deserializeJson(message []byte) ([]interface{}, error) {
 }
 
 func SerializeMessage(fruitRecords []fruititem.FruitItem) (*middleware.Message, error) {
-	data := []interface{}{}
+	var data []any
+
 	for _, fruitRecord := range fruitRecords {
-		datum := []interface{}{
+		datum := []any{
 			fruitRecord.Fruit,
 			fruitRecord.Amount,
 		}
 		data = append(data, datum)
 	}
-
 	body, err := serializeJson(data)
+
 	if err != nil {
 		return nil, err
 	}
@@ -41,30 +43,30 @@ func SerializeMessage(fruitRecords []fruititem.FruitItem) (*middleware.Message, 
 
 func DeserializeMessage(message *middleware.Message) ([]fruititem.FruitItem, bool, error) {
 	data, err := deserializeJson([]byte((*message).Body))
+
 	if err != nil {
 		return nil, false, err
 	}
+	var fruitRecords []fruititem.FruitItem
 
-	fruitRecords := []fruititem.FruitItem{}
 	for _, datum := range data {
-		fruitPair, ok := datum.([]interface{})
-		if !ok {
-			return nil, false, errors.New("Datum is not an array")
-		}
+		fruitPair, ok := datum.([]any)
 
+		if !ok {
+			return nil, false, errors.New("datum is not an array")
+		}
 		fruit, ok := fruitPair[0].(string)
-		if !ok {
-			return nil, false, errors.New("Datum is not a (fruit, amount) pair")
-		}
 
+		if !ok {
+			return nil, false, errors.New("datum is not a (fruit, amount) pair")
+		}
 		fruitAmount, ok := fruitPair[1].(float64)
-		if !ok {
-			return nil, false, errors.New("Datum is not a (fruit, amount) pair")
-		}
 
+		if !ok {
+			return nil, false, errors.New("datum is not a (fruit, amount) pair")
+		}
 		fruitRecord := fruititem.FruitItem{Fruit: fruit, Amount: uint32(fruitAmount)}
 		fruitRecords = append(fruitRecords, fruitRecord)
 	}
-
 	return fruitRecords, len(fruitRecords) == 0, nil
 }
