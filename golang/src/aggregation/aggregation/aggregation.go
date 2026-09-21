@@ -1,6 +1,7 @@
 package aggregation
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -30,50 +31,67 @@ type Aggregation struct {
 }
 
 func NewAggregation(config AggregationConfig) (*Aggregation, error) {
-	connSettings := middleware.ConnSettings{Hostname: config.MomHost, Port: config.MomPort}
-
+	connSettings := middleware.ConnSettings{
+		Hostname: config.MomHost,
+		Port:     config.MomPort,
+	}
 	outputQueue, err := middleware.CreateQueueMiddleware(config.OutputQueue, connSettings)
+
 	if err != nil {
 		return nil, err
 	}
-
 	inputExchangeRoutingKey := []string{fmt.Sprintf("%s_%d", config.AggregationPrefix, config.Id)}
 	inputExchange, err := middleware.CreateExchangeMiddleware(config.AggregationPrefix, inputExchangeRoutingKey, connSettings)
+
 	if err != nil {
-		outputQueue.Close()
+		_ = outputQueue.Close()
+
 		return nil, err
 	}
-
-	return &Aggregation{
+	aggregation := &Aggregation{
 		outputQueue:   outputQueue,
 		inputExchange: inputExchange,
 		fruitItemMap:  map[string]fruititem.FruitItem{},
 		topSize:       config.TopSize,
-	}, nil
+	}
+	return aggregation, nil
 }
 
 func (aggregation *Aggregation) Run() {
-	aggregation.inputExchange.StartConsuming(func(msg middleware.Message, ack, nack func()) {
-		aggregation.handleMessage(msg, ack, nack)
-	})
+	defer aggregation.close()
+
+	err := aggregation.inputExchange.StartConsuming(aggregation.handleMessage)
+
+	if err != nil {
+		slog.Error("While consuming messages from input queue", "err", err)
+	}
 }
 
-func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func(), nack func()) {
+func (aggregation *Aggregation) close() {
+	err1 := aggregation.outputQueue.Close()
+	err2 := aggregation.inputExchange.Close()
+
+	if err := errors.Join(err1, err2); err != nil {
+		slog.Error("While closing middleware", "err", err)
+	}
+}
+
+func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func(), _ func()) {
 	defer ack()
 
 	fruitRecords, isEof, err := inner.DeserializeMessage(&msg)
+
 	if err != nil {
 		slog.Error("While deserializing message", "err", err)
+
 		return
 	}
-
 	if isEof {
-		if err := aggregation.handleEndOfRecordsMessage(); err != nil {
+		if err = aggregation.handleEndOfRecordsMessage(); err != nil {
 			slog.Error("While handling end of record message", "err", err)
 		}
 		return
 	}
-
 	aggregation.handleDataMessage(fruitRecords)
 }
 
@@ -82,23 +100,28 @@ func (aggregation *Aggregation) handleEndOfRecordsMessage() error {
 
 	fruitTopRecords := aggregation.buildFruitTop()
 	message, err := inner.SerializeMessage(fruitTopRecords)
+
 	if err != nil {
 		slog.Debug("While serializing top message", "err", err)
-		return err
-	}
-	if err := aggregation.outputQueue.Send(*message); err != nil {
-		slog.Debug("While sending top message", "err", err)
-		return err
-	}
 
-	eofMessage := []fruititem.FruitItem{}
+		return err
+	}
+	if err = aggregation.outputQueue.Send(*message); err != nil {
+		slog.Debug("While sending top message", "err", err)
+
+		return err
+	}
+	var eofMessage []fruititem.FruitItem
 	message, err = inner.SerializeMessage(eofMessage)
+
 	if err != nil {
 		slog.Debug("While serializing EOF message", "err", err)
+
 		return err
 	}
-	if err := aggregation.outputQueue.Send(*message); err != nil {
+	if err = aggregation.outputQueue.Send(*message); err != nil {
 		slog.Debug("While sending EOF message", "err", err)
+
 		return err
 	}
 	return nil
@@ -116,6 +139,7 @@ func (aggregation *Aggregation) handleDataMessage(fruitRecords []fruititem.Fruit
 
 func (aggregation *Aggregation) buildFruitTop() []fruititem.FruitItem {
 	fruitItems := make([]fruititem.FruitItem, 0, len(aggregation.fruitItemMap))
+
 	for _, item := range aggregation.fruitItemMap {
 		fruitItems = append(fruitItems, item)
 	}
@@ -123,5 +147,6 @@ func (aggregation *Aggregation) buildFruitTop() []fruititem.FruitItem {
 		return fruitItems[j].Less(fruitItems[i])
 	})
 	finalTopSize := min(aggregation.topSize, len(fruitItems))
+
 	return fruitItems[:finalTopSize]
 }

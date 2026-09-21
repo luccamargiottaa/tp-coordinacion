@@ -1,6 +1,7 @@
 package join
 
 import (
+	"errors"
 	"log/slog"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
@@ -24,30 +25,49 @@ type Join struct {
 }
 
 func NewJoin(config JoinConfig) (*Join, error) {
-	connSettings := middleware.ConnSettings{Hostname: config.MomHost, Port: config.MomPort}
-
+	connSettings := middleware.ConnSettings{
+		Hostname: config.MomHost,
+		Port:     config.MomPort,
+	}
 	inputQueue, err := middleware.CreateQueueMiddleware(config.InputQueue, connSettings)
+
 	if err != nil {
 		return nil, err
 	}
-
 	outputQueue, err := middleware.CreateQueueMiddleware(config.OutputQueue, connSettings)
+
 	if err != nil {
-		inputQueue.Close()
+		_ = inputQueue.Close()
+
 		return nil, err
 	}
+	join := &Join{inputQueue: inputQueue, outputQueue: outputQueue}
 
-	return &Join{inputQueue: inputQueue, outputQueue: outputQueue}, nil
+	return join, nil
 }
 
 func (join *Join) Run() {
-	join.inputQueue.StartConsuming(func(msg middleware.Message, ack, nack func()) {
-		join.handleMessage(msg, ack, nack)
-	})
+	defer join.close()
+
+	err := join.inputQueue.StartConsuming(join.handleMessage)
+
+	if err != nil {
+		slog.Error("While consuming messages from input queue", "err", err)
+	}
 }
 
-func (join *Join) handleMessage(msg middleware.Message, ack func(), nack func()) {
+func (join *Join) close() {
+	err1 := join.inputQueue.Close()
+	err2 := join.outputQueue.Close()
+
+	if err := errors.Join(err1, err2); err != nil {
+		slog.Error("While closing middleware", "err", err)
+	}
+}
+
+func (join *Join) handleMessage(msg middleware.Message, ack func(), _ func()) {
 	defer ack()
+
 	if err := join.outputQueue.Send(msg); err != nil {
 		slog.Error("While sending top", "err", err)
 	}
