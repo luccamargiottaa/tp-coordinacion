@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
 )
 
@@ -68,6 +69,9 @@ func (join *Join) close() {
 func (join *Join) handleMessage(msg middleware.Message, ack func(), _ func()) {
 	defer ack()
 
+	if _, _, isEof, _ := inner.DeserializeMessage(&msg); isEof {
+		return
+	}
 	if err := join.outputQueue.Send(msg); err != nil {
 		slog.Error("While sending top", "err", err)
 	}

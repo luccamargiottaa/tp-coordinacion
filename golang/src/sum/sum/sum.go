@@ -21,10 +21,13 @@ type SumConfig struct {
 	AggregationPrefix string
 }
 
+type fruitItemMap map[string]fruititem.FruitItem
+type clientFruitItemMap map[uint64]fruitItemMap
+
 type Sum struct {
-	inputQueue     middleware.Middleware
-	outputExchange middleware.Middleware
-	fruitItemMap   map[string]fruititem.FruitItem
+	inputQueue         middleware.Middleware
+	outputExchange     middleware.Middleware
+	clientFruitItemMap clientFruitItemMap
 }
 
 func NewSum(config SumConfig) (*Sum, error) {
@@ -50,9 +53,9 @@ func NewSum(config SumConfig) (*Sum, error) {
 		return nil, err
 	}
 	sum := &Sum{
-		inputQueue:     inputQueue,
-		outputExchange: outputExchange,
-		fruitItemMap:   map[string]fruititem.FruitItem{},
+		inputQueue:         inputQueue,
+		outputExchange:     outputExchange,
+		clientFruitItemMap: make(clientFruitItemMap),
 	}
 	return sum, nil
 }
@@ -79,7 +82,7 @@ func (sum *Sum) close() {
 func (sum *Sum) handleMessage(msg middleware.Message, ack func(), _ func()) {
 	defer ack()
 
-	fruitRecords, isEof, err := inner.DeserializeMessage(&msg)
+	clientID, fruitRecords, isEof, err := inner.DeserializeMessage(&msg)
 
 	if err != nil {
 		slog.Error("While deserializing message", "err", err)
@@ -87,34 +90,37 @@ func (sum *Sum) handleMessage(msg middleware.Message, ack func(), _ func()) {
 		return
 	}
 	if isEof {
-		if err = sum.handleEndOfRecordMessage(); err != nil {
+		if err = sum.handleEndOfRecordMessage(clientID); err != nil {
 			slog.Error("While handling end of record message", "err", err)
 		}
 		return
 	}
-	sum.handleDataMessage(fruitRecords)
+	sum.handleDataMessage(clientID, fruitRecords)
 }
 
-func (sum *Sum) handleEndOfRecordMessage() error {
+func (sum *Sum) handleEndOfRecordMessage(clientID uint64) error {
 	slog.Info("Received End Of Records message")
+	fruitMap, ok := sum.clientFruitItemMap[clientID]
 
-	for key := range sum.fruitItemMap {
-		fruitRecord := []fruititem.FruitItem{sum.fruitItemMap[key]}
-		message, err := inner.SerializeMessage(fruitRecord)
+	if ok {
+		for key := range fruitMap {
+			fruitRecord := []fruititem.FruitItem{fruitMap[key]}
+			message, err := inner.SerializeMessage(clientID, fruitRecord)
 
-		if err != nil {
-			slog.Debug("While serializing message", "err", err)
+			if err != nil {
+				slog.Debug("While serializing message", "err", err)
 
-			return err
-		}
-		if err = sum.outputExchange.Send(*message); err != nil {
-			slog.Debug("While sending message", "err", err)
+				return err
+			}
+			if err = sum.outputExchange.Send(*message); err != nil {
+				slog.Debug("While sending message", "err", err)
 
-			return err
+				return err
+			}
 		}
 	}
 	var eofMessage []fruititem.FruitItem
-	message, err := inner.SerializeMessage(eofMessage)
+	message, err := inner.SerializeMessage(clientID, eofMessage)
 
 	if err != nil {
 		slog.Debug("While serializing EOF message", "err", err)
@@ -126,15 +132,23 @@ func (sum *Sum) handleEndOfRecordMessage() error {
 
 		return err
 	}
+	delete(sum.clientFruitItemMap, clientID)
+
 	return nil
 }
 
-func (sum *Sum) handleDataMessage(fruitRecords []fruititem.FruitItem) {
+func (sum *Sum) handleDataMessage(clientID uint64, fruitRecords []fruititem.FruitItem) {
+	fruitMap, ok := sum.clientFruitItemMap[clientID]
+
+	if !ok {
+		fruitMap = make(map[string]fruititem.FruitItem)
+		sum.clientFruitItemMap[clientID] = fruitMap
+	}
 	for _, fruitRecord := range fruitRecords {
-		if _, ok := sum.fruitItemMap[fruitRecord.Fruit]; ok {
-			sum.fruitItemMap[fruitRecord.Fruit] = sum.fruitItemMap[fruitRecord.Fruit].Sum(fruitRecord)
+		if _, ok := fruitMap[fruitRecord.Fruit]; ok {
+			fruitMap[fruitRecord.Fruit] = fruitMap[fruitRecord.Fruit].Sum(fruitRecord)
 		} else {
-			sum.fruitItemMap[fruitRecord.Fruit] = fruitRecord
+			fruitMap[fruitRecord.Fruit] = fruitRecord
 		}
 	}
 }
