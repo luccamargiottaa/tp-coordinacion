@@ -14,17 +14,19 @@ var (
 )
 
 type MessageBody struct {
-	ClientID uint64  `json:"client_id"`
-	Fruit    [][]any `json:"fruit"`
+	ClientID  uint64  `json:"client_id"`
+	Fruit     [][]any `json:"fruit"`
+	IsEof     bool    `json:"is_eof"`
+	NotifyEof bool    `json:"notify_eof"`
 }
 
-func NewMessageBody(clientID uint64, fruitRecords []fruititem.FruitItem) *MessageBody {
+func NewMessageBody(clientID uint64, fruitRecords []fruititem.FruitItem, isEof bool, notifyEof bool) *MessageBody {
 	fruit := make([][]any, 0, len(fruitRecords))
 
 	for _, fruitRecord := range fruitRecords {
 		fruit = append(fruit, []any{fruitRecord.Fruit, fruitRecord.Amount})
 	}
-	return &MessageBody{clientID, fruit}
+	return &MessageBody{clientID, fruit, isEof, notifyEof}
 }
 
 func (messageBody *MessageBody) Serialize() (*middleware.Message, error) {
@@ -40,10 +42,6 @@ func (messageBody *MessageBody) Serialize() (*middleware.Message, error) {
 
 func (messageBody *MessageBody) Deserialize(message *middleware.Message) error {
 	return deserializeJson([]byte((*message).Body), messageBody)
-}
-
-func (messageBody *MessageBody) GetClientID() uint64 {
-	return messageBody.ClientID
 }
 
 func (messageBody *MessageBody) FruitRecords() ([]fruititem.FruitItem, error) {

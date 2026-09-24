@@ -68,7 +68,7 @@ func ack(delivery amqp.Delivery) {
 }
 
 func nack(delivery amqp.Delivery) {
-	_ = delivery.Nack(false, true)
+	_ = delivery.Nack(false, false)
 }
 
 func consumeDeliveries(deliveries <-chan amqp.Delivery, callbackFunc func(msg Message, ack func(), nack func())) {

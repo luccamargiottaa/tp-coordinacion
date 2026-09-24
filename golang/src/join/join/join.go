@@ -69,7 +69,7 @@ func (join *Join) close() {
 func (join *Join) handleMessage(msg middleware.Message, ack func(), _ func()) {
 	defer ack()
 
-	if _, _, isEof, _ := inner.DeserializeMessage(&msg); isEof {
+	if _, _, isEof, _, _ := inner.DeserializeMessage(&msg); isEof {
 		return
 	}
 	if err := join.outputQueue.Send(msg); err != nil {
