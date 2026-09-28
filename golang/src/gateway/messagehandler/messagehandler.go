@@ -6,29 +6,27 @@ import (
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
 )
 
-const initialClientID = 0
+const initialClientId = 0
 
-var nextClientID uint64 = initialClientID
+var nextClientId uint64 = initialClientId
 
 type MessageHandler struct {
-	clientID uint64
+	clientId uint64
 }
 
 func NewMessageHandler() MessageHandler {
-	clientID := nextClientID
-	nextClientID++
+	clientID := nextClientId
+	nextClientId++
 
 	return MessageHandler{clientID}
 }
 
 func (messageHandler *MessageHandler) SerializeDataMessage(fruitRecord fruititem.FruitItem) (*middleware.Message, error) {
-	data := []fruititem.FruitItem{fruitRecord}
-
-	return inner.SerializeMessage(messageHandler.clientID, data, false, false)
+	return inner.SerializeFruitRecordMessage(messageHandler.clientId, fruitRecord)
 }
 
 func (messageHandler *MessageHandler) SerializeEOFMessage() (*middleware.Message, error) {
-	return inner.SerializeMessage(messageHandler.clientID, nil, true, true)
+	return inner.SerializeNotifyEofMessage(messageHandler.clientId)
 }
 
 func (messageHandler *MessageHandler) DeserializeResultMessage(message *middleware.Message) ([]fruititem.FruitItem, error) {
@@ -37,7 +35,7 @@ func (messageHandler *MessageHandler) DeserializeResultMessage(message *middlewa
 	if err != nil {
 		return nil, err
 	}
-	if clientID != messageHandler.clientID {
+	if clientID != messageHandler.clientId {
 		return nil, nil
 	}
 	return fruitRecords, nil
