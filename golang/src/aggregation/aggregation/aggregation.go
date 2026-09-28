@@ -1,7 +1,6 @@
 package aggregation
 
 import (
-	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -32,7 +31,7 @@ type Aggregation struct {
 	clientFruitItemMap clientFruitItemMap
 	topSize            int
 	sumAmount          int
-	eofPerClient       map[uint64]int
+	clientEofs         map[uint64]int
 }
 
 func NewAggregation(config AggregationConfig) (*Aggregation, error) {
@@ -45,8 +44,8 @@ func NewAggregation(config AggregationConfig) (*Aggregation, error) {
 	if err != nil {
 		return nil, err
 	}
-	inputExchangeRoutingKey := []string{fmt.Sprintf("%s_%d", config.AggregationPrefix, config.Id)}
-	inputExchange, err := middleware.CreateExchangeMiddleware(config.AggregationPrefix, inputExchangeRoutingKey, connSettings)
+	key := []string{fmt.Sprintf("%s_%d", config.AggregationPrefix, config.Id)}
+	inputExchange, err := middleware.CreateExchangeMiddleware(config.AggregationPrefix, key, connSettings)
 
 	if err != nil {
 		_ = outputQueue.Close()
@@ -59,7 +58,7 @@ func NewAggregation(config AggregationConfig) (*Aggregation, error) {
 		clientFruitItemMap: make(clientFruitItemMap),
 		topSize:            config.TopSize,
 		sumAmount:          config.SumAmount,
-		eofPerClient:       make(map[uint64]int),
+		clientEofs:         make(map[uint64]int),
 	}
 	return aggregation, nil
 }
@@ -75,24 +74,27 @@ func (aggregation *Aggregation) Run() {
 }
 
 func (aggregation *Aggregation) close() {
-	err1 := aggregation.outputQueue.Close()
-	err2 := aggregation.inputExchange.Close()
+	finalErr := aggregation.outputQueue.Close()
 
-	if err := errors.Join(err1, err2); err != nil {
-		slog.Error("While closing middleware", "err", err)
+	if err := aggregation.inputExchange.Close(); err != nil {
+		finalErr = err
+	}
+	if finalErr != nil {
+		slog.Error("While closing middleware", "err", finalErr)
 	}
 }
 
-func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func(), _ func()) {
-	defer ack()
-
+func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func(), nack func()) {
 	clientID, fruitRecords, isEof, _, err := inner.DeserializeMessage(&msg)
 
 	if err != nil {
 		slog.Error("While deserializing message", "err", err)
+		nack()
 
 		return
 	}
+	defer ack()
+
 	if isEof {
 		if err = aggregation.handleEndOfRecordsMessage(clientID); err != nil {
 			slog.Error("While handling end of record message", "err", err)
@@ -105,14 +107,14 @@ func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func()
 func (aggregation *Aggregation) handleEndOfRecordsMessage(clientID uint64) error {
 	slog.Info("Received End Of Records message")
 
-	count, ok := aggregation.eofPerClient[clientID]
+	count, ok := aggregation.clientEofs[clientID]
 
 	if !ok {
-		aggregation.eofPerClient[clientID] = 1
+		aggregation.clientEofs[clientID] = 1
 		count = 1
 	} else {
 		count++
-		aggregation.eofPerClient[clientID] = count
+		aggregation.clientEofs[clientID] = count
 	}
 	if count < aggregation.sumAmount {
 		return nil
@@ -120,7 +122,7 @@ func (aggregation *Aggregation) handleEndOfRecordsMessage(clientID uint64) error
 	if err := aggregation.sendFruitTop(clientID); err != nil {
 		return err
 	}
-	delete(aggregation.eofPerClient, clientID)
+	delete(aggregation.clientEofs, clientID)
 
 	return nil
 }

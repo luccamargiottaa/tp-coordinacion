@@ -1,8 +1,8 @@
 package sum
 
 import (
-	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/boundedset"
@@ -29,7 +29,7 @@ type clientFruitItemMap map[uint64]fruitItemMap
 
 type Sum struct {
 	inputQueue         middleware.Middleware
-	outputExchange     middleware.Middleware
+	outputExchanges    []middleware.Middleware
 	clientFruitItemMap clientFruitItemMap
 	sumAmount          int
 	finishedClients    boundedset.BoundedSet
@@ -45,23 +45,27 @@ func NewSum(config SumConfig) (*Sum, error) {
 	if err != nil {
 		return nil, err
 	}
-	outputExchangeRouteKeys := make([]string, config.AggregationAmount)
+	outputExchanges := make([]middleware.Middleware, config.AggregationAmount)
 
-	for i := range config.AggregationAmount {
-		outputExchangeRouteKeys[i] = fmt.Sprintf("%s_%d", config.AggregationPrefix, i)
-	}
-	outputExchange, err := middleware.CreateExchangeMiddleware(config.AggregationPrefix, outputExchangeRouteKeys, connSettings)
+	for i := range outputExchanges {
+		key := fmt.Sprintf("%s_%d", config.AggregationPrefix, i)
+		outputExchange, err := middleware.CreateExchangeMiddleware(config.AggregationPrefix, []string{key}, connSettings)
 
-	if err != nil {
-		_ = inputQueue.Close()
+		if err != nil {
+			_ = inputQueue.Close()
 
-		return nil, err
+			for j := range i {
+				_ = outputExchanges[j].Close()
+			}
+			return nil, err
+		}
+		outputExchanges[i] = outputExchange
 	}
 	finishedClients := boundedset.NewBoundedSet(maxFinishedClients)
 
 	sum := &Sum{
 		inputQueue:         inputQueue,
-		outputExchange:     outputExchange,
+		outputExchanges:    outputExchanges,
 		clientFruitItemMap: make(clientFruitItemMap),
 		sumAmount:          config.SumAmount,
 		finishedClients:    *finishedClients,
@@ -80,11 +84,15 @@ func (sum *Sum) Run() {
 }
 
 func (sum *Sum) close() {
-	err1 := sum.inputQueue.Close()
-	err2 := sum.outputExchange.Close()
+	finalErr := sum.inputQueue.Close()
 
-	if err := errors.Join(err1, err2); err != nil {
-		slog.Error("While closing middleware", "err", err)
+	for _, outputExchange := range sum.outputExchanges {
+		if err := outputExchange.Close(); err != nil {
+			finalErr = err
+		}
+	}
+	if finalErr != nil {
+		slog.Error("While closing middleware", "err", finalErr)
 	}
 }
 
@@ -163,18 +171,8 @@ func (sum *Sum) sendFruitSums(clientID uint64) error {
 	fruitMap, ok := sum.clientFruitItemMap[clientID]
 
 	if ok {
-		for key := range fruitMap {
-			fruitRecord := []fruititem.FruitItem{fruitMap[key]}
-			message, err := inner.SerializeMessage(clientID, fruitRecord, false, false)
-
-			if err != nil {
-				slog.Debug("While serializing message", "err", err)
-
-				return err
-			}
-			if err = sum.outputExchange.Send(*message); err != nil {
-				slog.Debug("While sending message", "err", err)
-
+		for _, fruit := range fruitMap {
+			if err := sum.sendFruit(clientID, fruit); err != nil {
 				return err
 			}
 		}
@@ -186,14 +184,44 @@ func (sum *Sum) sendFruitSums(clientID uint64) error {
 
 		return err
 	}
-	if err = sum.outputExchange.Send(*message); err != nil {
-		slog.Debug("While sending EOF message", "err", err)
+	for _, outputExchange := range sum.outputExchanges {
+		if err = outputExchange.Send(*message); err != nil {
+			slog.Debug("While sending EOF message", "err", err)
 
-		return err
+			return err
+		}
 	}
 	delete(sum.clientFruitItemMap, clientID)
 
 	return nil
+}
+
+func (sum *Sum) sendFruit(clientID uint64, fruit fruititem.FruitItem) error {
+	message, err := inner.SerializeMessage(clientID, []fruititem.FruitItem{fruit}, false, false)
+
+	if err != nil {
+		slog.Debug("While serializing message", "err", err)
+
+		return err
+	}
+	outputExchange := sum.getOutputExchange(fruit)
+
+	if err = outputExchange.Send(*message); err != nil {
+		slog.Debug("While sending message", "err", err)
+
+		return err
+	}
+	return nil
+}
+
+func (sum *Sum) getOutputExchange(fruit fruititem.FruitItem) middleware.Middleware {
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(fruit.Fruit))
+
+	hashing := hash.Sum32()
+	index := hashing % uint32(len(sum.outputExchanges)) //nolint:gosec
+
+	return sum.outputExchanges[index]
 }
 
 func (sum *Sum) handleDataMessage(clientID uint64, fruitRecords []fruititem.FruitItem) {
