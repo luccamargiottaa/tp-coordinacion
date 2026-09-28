@@ -212,7 +212,7 @@ func (sum *Sum) sendFruitRecord(clientId uint64, fruitRecord fruititem.FruitItem
 
 		return err
 	}
-	outputExchange := sum.getOutputExchange(fruitRecord)
+	outputExchange := sum.getOutputExchange(clientId, fruitRecord)
 
 	if err = outputExchange.Send(*message); err != nil {
 		slog.Debug("While sending message", "err", err)
@@ -222,9 +222,11 @@ func (sum *Sum) sendFruitRecord(clientId uint64, fruitRecord fruititem.FruitItem
 	return nil
 }
 
-func (sum *Sum) getOutputExchange(fruitRecord fruititem.FruitItem) middleware.Middleware {
+func (sum *Sum) getOutputExchange(clientId uint64, fruitRecord fruititem.FruitItem) middleware.Middleware {
 	hash := fnv.New32a()
-	_, _ = hash.Write([]byte(fruitRecord.Fruit))
+
+	key := fmt.Sprintf("%s_%d", fruitRecord.Fruit, clientId)
+	_, _ = hash.Write([]byte(key))
 
 	hashing := hash.Sum32()
 	index := hashing % uint32(len(sum.outputExchanges)) //nolint:gosec
