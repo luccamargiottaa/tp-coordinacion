@@ -6,8 +6,8 @@ import (
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/clienttop"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/clienteofcounter"
-	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
+	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner/messagebody"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
 )
 
@@ -64,7 +64,7 @@ func (aggregation *Aggregation) Run() {
 	defer aggregation.close()
 
 	err := aggregation.inputExchange.StartConsuming(func(msg middleware.Message, ack func(), nack func()) {
-		if err := aggregation.handleMessage(msg, ack, nack); err != nil {
+		if err := inner.HandleMessage(aggregation, msg, ack, nack); err != nil {
 			_ = aggregation.inputExchange.StopConsuming()
 		}
 	})
@@ -87,35 +87,15 @@ func (aggregation *Aggregation) close() {
 	}
 }
 
-func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func(), nack func()) error {
-	clientId, fruitRecords, isEof, _, err := inner.DeserializeMessage(&msg)
+func (aggregation *Aggregation) HandleDataMessage(messageBody *messagebody.MessageBody) error {
+	aggregation.clientTop.AddRecords(messageBody.ClientId, messageBody.FruitRecords)
 
-	if err != nil {
-		slog.Error("While deserializing message", "err", err)
-		nack()
-
-		return err
-	}
-	defer ack()
-
-	if isEof {
-		if err = aggregation.handleEndOfRecordsMessage(clientId); err != nil {
-			slog.Error("While handling end of record message", "err", err)
-
-			return err
-		}
-	} else {
-		aggregation.handleDataMessage(clientId, fruitRecords)
-	}
 	return nil
 }
 
-func (aggregation *Aggregation) handleDataMessage(clientId uint64, fruitRecords []fruititem.FruitItem) {
-	aggregation.clientTop.AddRecords(clientId, fruitRecords)
-}
-
-func (aggregation *Aggregation) handleEndOfRecordsMessage(clientId uint64) error {
-	slog.Info("Received End Of Records message")
+func (aggregation *Aggregation) HandleEofMessage(messageBody *messagebody.MessageBody) error {
+	clientId := messageBody.ClientId
+	slog.Info("Received Eof message", "client_id", clientId)
 
 	aggregation.clientEofCounter.Increment(clientId)
 

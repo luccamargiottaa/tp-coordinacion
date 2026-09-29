@@ -5,8 +5,8 @@ import (
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/clienttop"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/clienteofcounter"
-	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
+	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner/messagebody"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
 )
 
@@ -62,7 +62,7 @@ func (join *Join) Run() {
 	defer join.close()
 
 	err := join.inputQueue.StartConsuming(func(msg middleware.Message, ack func(), nack func()) {
-		if err := join.handleMessage(msg, ack, nack); err != nil {
+		if err := inner.HandleMessage(join, msg, ack, nack); err != nil {
 			_ = join.inputQueue.StopConsuming()
 		}
 	})
@@ -85,35 +85,15 @@ func (join *Join) close() {
 	}
 }
 
-func (join *Join) handleMessage(msg middleware.Message, ack func(), nack func()) error {
-	clientId, fruitRecordsTop, isEof, _, err := inner.DeserializeMessage(&msg)
+func (join *Join) HandleDataMessage(messageBody *messagebody.MessageBody) error {
+	join.clientTop.UpdateTop(messageBody.ClientId, messageBody.FruitRecords)
 
-	if err != nil {
-		slog.Error("While deserializing message", "err", err)
-		nack()
-
-		return err
-	}
-	defer ack()
-
-	if isEof {
-		if err = join.handleEndOfRecordsMessage(clientId); err != nil {
-			slog.Error("While handling end of record message", "err", err)
-
-			return err
-		}
-	} else {
-		join.handleDataMessage(clientId, fruitRecordsTop)
-	}
 	return nil
 }
 
-func (join *Join) handleDataMessage(clientId uint64, fruitRecordsTop []fruititem.FruitItem) {
-	join.clientTop.UpdateTop(clientId, fruitRecordsTop)
-}
-
-func (join *Join) handleEndOfRecordsMessage(clientId uint64) error {
-	slog.Info("Received End Of Records message")
+func (join *Join) HandleEofMessage(messageBody *messagebody.MessageBody) error {
+	clientId := messageBody.ClientId
+	slog.Info("Received Eof message", "client_id", clientId)
 
 	join.clientEofCounter.Increment(clientId)
 
