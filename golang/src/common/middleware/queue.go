@@ -1,6 +1,10 @@
 package middleware
 
-import amqp "github.com/rabbitmq/amqp091-go"
+import (
+	"sync/atomic"
+
+	amqp "github.com/rabbitmq/amqp091-go"
+)
 
 const prefetchCount = 1
 
@@ -9,7 +13,7 @@ type MessageMiddlewareQueueRabbitMQ struct {
 	connection *amqp.Connection
 	channel    *amqp.Channel
 	queue      amqp.Queue
-	consuming  bool
+	consuming  atomic.Bool
 }
 
 func newMiddlewareQueue(queueName string, connection *amqp.Connection, channel *amqp.Channel) (*MessageMiddlewareQueueRabbitMQ, error) {
@@ -31,7 +35,7 @@ func newMiddlewareQueue(queueName string, connection *amqp.Connection, channel *
 }
 
 func (middlewareQueue *MessageMiddlewareQueueRabbitMQ) StartConsuming(callbackFunc func(msg Message, ack func(), nack func())) error {
-	middlewareQueue.consuming = true
+	middlewareQueue.consuming.Store(true)
 	deliveries, err := getConsumeChannel(middlewareQueue.channel, middlewareQueue.queueName, middlewareQueue.queueName)
 
 	if err != nil {
@@ -39,17 +43,17 @@ func (middlewareQueue *MessageMiddlewareQueueRabbitMQ) StartConsuming(callbackFu
 	}
 	consumeDeliveries(deliveries, callbackFunc)
 
-	if middlewareQueue.consuming {
+	if middlewareQueue.consuming.Load() {
 		return ErrMessageMiddlewareDisconnected
 	}
 	return nil
 }
 
 func (middlewareQueue *MessageMiddlewareQueueRabbitMQ) StopConsuming() error {
-	if !middlewareQueue.consuming {
+	if !middlewareQueue.consuming.Load() {
 		return nil
 	}
-	middlewareQueue.consuming = false
+	middlewareQueue.consuming.Store(false)
 	err := stopConsuming(middlewareQueue.channel, middlewareQueue.queueName)
 
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/clientrecordinfo"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/clientfruitrecords"
@@ -20,6 +21,7 @@ type EofCoordinator struct {
 	mutex              *sync.Mutex
 	clientFruitRecords *clientfruitrecords.ClientFruitRecords
 	clientRecordInfo   *clientrecordinfo.ClientRecordInfo
+	running            atomic.Bool
 }
 
 func newEofCoordinator(
@@ -56,11 +58,11 @@ func newEofCoordinator(
 		outputExchanges[i] = outputExchange
 	}
 	eofCoordinator := &EofCoordinator{
-		sumExchange,
-		outputExchanges,
-		mutex,
-		clientFruitRecords,
-		clientRecordInfo,
+		sumExchange:        sumExchange,
+		outputExchanges:    outputExchanges,
+		mutex:              mutex,
+		clientFruitRecords: clientFruitRecords,
+		clientRecordInfo:   clientRecordInfo,
 	}
 	return eofCoordinator, nil
 }
@@ -71,10 +73,16 @@ func (eofCoordinator *EofCoordinator) Run() {
 	err := eofCoordinator.sumExchange.StartConsuming(func(msg middleware.Message, ack func(), nack func()) {
 		if err := inner.HandleMessage(eofCoordinator, msg, ack, nack); err != nil {
 			_ = eofCoordinator.sumExchange.StopConsuming()
+
+			if eofCoordinator.running.Load() {
+				slog.Error("COORDINATOR", "err", err)
+			}
 		}
 	})
 	if err != nil {
-		slog.Error("COORDINATOR While consuming messages from sum exchange", "err", err)
+		if eofCoordinator.running.Load() {
+			slog.Error("COORDINATOR While consuming messages from sum exchange", "err", err)
+		}
 	}
 }
 
@@ -90,7 +98,9 @@ func (eofCoordinator *EofCoordinator) close() {
 		}
 	}
 	if finalErr != nil {
-		slog.Error("COORDINATOR While closing middleware", "err", finalErr)
+		if eofCoordinator.running.Load() {
+			slog.Error("COORDINATOR While closing middleware", "err", finalErr)
+		}
 	}
 }
 
@@ -124,15 +134,11 @@ func (eofCoordinator *EofCoordinator) sendFruitRecords(clientId uint64) error {
 	message, err := inner.SerializeEofMessage(clientId)
 
 	if err != nil {
-		slog.Debug("COORDINATOR While serializing EOF message", "err", err)
-
-		return err
+		return fmt.Errorf("while serializing EOF message: %w", err)
 	}
 	for _, outputExchange := range eofCoordinator.outputExchanges {
 		if err = outputExchange.Send(*message); err != nil {
-			slog.Debug("COORDINATOR While sending EOF message", "err", err)
-
-			return err
+			return fmt.Errorf("while sending EOF message: %w", err)
 		}
 	}
 	eofCoordinator.clientFruitRecords.DeleteRecords(clientId)
@@ -144,16 +150,12 @@ func (eofCoordinator *EofCoordinator) sendFruitRecord(clientId uint64, fruitReco
 	message, err := inner.SerializeFruitRecordMessage(clientId, fruitRecord)
 
 	if err != nil {
-		slog.Debug("COORDINATOR While serializing message", "err", err)
-
-		return err
+		return fmt.Errorf("while serializing message: %w", err)
 	}
 	outputExchange := eofCoordinator.getOutputExchange(clientId, fruitRecord)
 
 	if err = outputExchange.Send(*message); err != nil {
-		slog.Debug("COORDINATOR While sending message", "err", err)
-
-		return err
+		return fmt.Errorf("while sending message: %w", err)
 	}
 	return nil
 }
@@ -183,14 +185,10 @@ func (eofCoordinator *EofCoordinator) HandleEofMessage(messageBody *messagebody.
 	message, err := inner.SerializeRecordAmountMessage(clientId, recordAmount)
 
 	if err != nil {
-		slog.Debug("COORDINATOR While serializing Record Amount message", "err", err)
-
-		return err
+		return fmt.Errorf("while serializing Record Amount message: %w", err)
 	}
 	if err = eofCoordinator.sumExchange.Send(*message); err != nil {
-		slog.Error("COORDINATOR While sending Record Amount message", "err", err)
-
-		return err
+		return fmt.Errorf("while sending Record Amount message: %w", err)
 	}
 	return nil
 }

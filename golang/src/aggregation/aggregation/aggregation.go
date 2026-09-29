@@ -3,6 +3,10 @@ package aggregation
 import (
 	"fmt"
 	"log/slog"
+	"os"
+	"os/signal"
+	"sync/atomic"
+	"syscall"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/clienttop"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/clienteofcounter"
@@ -28,6 +32,7 @@ type Aggregation struct {
 	outputQueue      middleware.Middleware
 	clientTop        clienttop.ClientTop
 	clientEofCounter clienteofcounter.ClientEofCounter
+	running          atomic.Bool
 }
 
 func NewAggregation(config AggregationConfig) (*Aggregation, error) {
@@ -63,14 +68,25 @@ func NewAggregation(config AggregationConfig) (*Aggregation, error) {
 func (aggregation *Aggregation) Run() {
 	defer aggregation.close()
 
+	aggregation.running.Store(true)
+	doneCh := make(chan struct{})
+	go aggregation.handleSignals(doneCh)
+
 	err := aggregation.inputExchange.StartConsuming(func(msg middleware.Message, ack func(), nack func()) {
 		if err := inner.HandleMessage(aggregation, msg, ack, nack); err != nil {
 			_ = aggregation.inputExchange.StopConsuming()
+
+			if aggregation.running.Load() {
+				slog.Error(err.Error())
+			}
 		}
 	})
 	if err != nil {
-		slog.Error("While consuming messages from input queue", "err", err)
+		if aggregation.running.Load() {
+			slog.Error("While consuming messages from input queue", "err", err)
+		}
 	}
+	<-doneCh
 }
 
 func (aggregation *Aggregation) close() {
@@ -83,8 +99,25 @@ func (aggregation *Aggregation) close() {
 		finalErr = err
 	}
 	if finalErr != nil {
-		slog.Error("While closing middleware", "err", finalErr)
+		if aggregation.running.Load() {
+			slog.Error("While closing middleware", "err", finalErr)
+		}
 	}
+}
+
+func (aggregation *Aggregation) handleSignals(doneCh chan struct{}) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+
+	<-signals
+	slog.Info("SIGTERM signal received")
+
+	aggregation.running.Store(false)
+	aggregation.close()
+
+	doneCh <- struct{}{}
+	close(doneCh)
+	close(signals)
 }
 
 func (aggregation *Aggregation) HandleDataMessage(messageBody *messagebody.MessageBody) error {
@@ -117,27 +150,19 @@ func (aggregation *Aggregation) sendFruitRecordsTop(clientId uint64) error {
 		message, err := inner.SerializeFruitRecordsMessage(clientId, fruitRecordsTop)
 
 		if err != nil {
-			slog.Debug("While serializing top message", "err", err)
-
-			return err
+			return fmt.Errorf("while serializing top message: %w", err)
 		}
 		if err = aggregation.outputQueue.Send(*message); err != nil {
-			slog.Debug("While sending top message", "err", err)
-
-			return err
+			return fmt.Errorf("while sending top message: %w", err)
 		}
 	}
 	message, err := inner.SerializeEofMessage(clientId)
 
 	if err != nil {
-		slog.Debug("While serializing EOF message", "err", err)
-
-		return err
+		return fmt.Errorf("while serializing EOF message: %w", err)
 	}
 	if err = aggregation.outputQueue.Send(*message); err != nil {
-		slog.Debug("While sending EOF message", "err", err)
-
-		return err
+		return fmt.Errorf("while sending EOF message: %w", err)
 	}
 	aggregation.clientTop.DeleteRecords(clientId)
 

@@ -1,7 +1,12 @@
 package join
 
 import (
+	"fmt"
 	"log/slog"
+	"os"
+	"os/signal"
+	"sync/atomic"
+	"syscall"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/clienttop"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/clienteofcounter"
@@ -27,6 +32,7 @@ type Join struct {
 	outputQueue      middleware.Middleware
 	clientTop        clienttop.ClientTop
 	clientEofCounter clienteofcounter.ClientEofCounter
+	running          atomic.Bool
 }
 
 func NewJoin(config JoinConfig) (*Join, error) {
@@ -61,14 +67,25 @@ func NewJoin(config JoinConfig) (*Join, error) {
 func (join *Join) Run() {
 	defer join.close()
 
+	join.running.Store(true)
+	doneCh := make(chan struct{})
+	go join.handleSignals(doneCh)
+
 	err := join.inputQueue.StartConsuming(func(msg middleware.Message, ack func(), nack func()) {
 		if err := inner.HandleMessage(join, msg, ack, nack); err != nil {
 			_ = join.inputQueue.StopConsuming()
+
+			if join.running.Load() {
+				slog.Error(err.Error())
+			}
 		}
 	})
 	if err != nil {
-		slog.Error("While consuming messages from input queue", "err", err)
+		if join.running.Load() {
+			slog.Error("While consuming messages from input queue", "err", err)
+		}
 	}
+	<-doneCh
 }
 
 func (join *Join) close() {
@@ -81,8 +98,25 @@ func (join *Join) close() {
 		finalErr = err
 	}
 	if finalErr != nil {
-		slog.Error("While closing middleware", "err", finalErr)
+		if join.running.Load() {
+			slog.Error("While closing middleware", "err", finalErr)
+		}
 	}
+}
+
+func (join *Join) handleSignals(doneCh chan struct{}) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+
+	<-signals
+	slog.Info("SIGTERM signal received")
+
+	join.running.Store(false)
+	join.close()
+
+	doneCh <- struct{}{}
+	close(doneCh)
+	close(signals)
 }
 
 func (join *Join) HandleDataMessage(messageBody *messagebody.MessageBody) error {
@@ -113,14 +147,10 @@ func (join *Join) sendFruitRecordsTop(clientId uint64) error {
 	message, err := inner.SerializeFruitRecordsMessage(clientId, fruitRecordsTop)
 
 	if err != nil {
-		slog.Debug("While serializing top message", "err", err)
-
-		return err
+		return fmt.Errorf("while serializing top message: %w", err)
 	}
 	if err = join.outputQueue.Send(*message); err != nil {
-		slog.Debug("While sending top message", "err", err)
-
-		return err
+		return fmt.Errorf("while sending top message: %w", err)
 	}
 	join.clientTop.DeleteTop(clientId)
 

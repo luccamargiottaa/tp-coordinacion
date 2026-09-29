@@ -1,13 +1,17 @@
 package middleware
 
-import amqp "github.com/rabbitmq/amqp091-go"
+import (
+	"sync/atomic"
+
+	amqp "github.com/rabbitmq/amqp091-go"
+)
 
 type MessageMiddlewareExchangeRabbitMQ struct {
 	exchange   string
 	keys       []string
 	connection *amqp.Connection
 	channel    *amqp.Channel
-	consuming  bool
+	consuming  atomic.Bool
 }
 
 func newMiddlewareExchange(exchange string, keys []string, connection *amqp.Connection, channel *amqp.Channel) (*MessageMiddlewareExchangeRabbitMQ, error) {
@@ -50,7 +54,7 @@ func (middlewareExchange *MessageMiddlewareExchangeRabbitMQ) StartConsuming(call
 			return handleError(err, middlewareExchange.connection)
 		}
 	}
-	middlewareExchange.consuming = true
+	middlewareExchange.consuming.Store(true)
 	deliveries, err := getConsumeChannel(middlewareExchange.channel, queue.Name, middlewareExchange.exchange)
 
 	if err != nil {
@@ -58,17 +62,17 @@ func (middlewareExchange *MessageMiddlewareExchangeRabbitMQ) StartConsuming(call
 	}
 	consumeDeliveries(deliveries, callbackFunc)
 
-	if middlewareExchange.consuming {
+	if middlewareExchange.consuming.Load() {
 		return ErrMessageMiddlewareDisconnected
 	}
 	return nil
 }
 
 func (middlewareExchange *MessageMiddlewareExchangeRabbitMQ) StopConsuming() error {
-	if !middlewareExchange.consuming {
+	if !middlewareExchange.consuming.Load() {
 		return nil
 	}
-	middlewareExchange.consuming = false
+	middlewareExchange.consuming.Store(false)
 	err := stopConsuming(middlewareExchange.channel, middlewareExchange.exchange)
 
 	if err != nil {
